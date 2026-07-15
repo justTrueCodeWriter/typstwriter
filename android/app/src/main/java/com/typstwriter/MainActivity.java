@@ -154,7 +154,7 @@ public class MainActivity extends Activity {
     private void saveFileAs() {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
+        intent.setType("text/plain");
         intent.putExtra(Intent.EXTRA_TITLE, "document.typ");
         startActivityForResult(intent, SAVE_FILE_REQUEST);
     }
@@ -162,7 +162,8 @@ public class MainActivity extends Activity {
     private void openFile() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
+        intent.setType("text/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "application/octet-stream"});
         startActivityForResult(intent, OPEN_FILE_REQUEST);
     }
 
@@ -191,6 +192,13 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_OK && data != null && data.getData() != null) {
             Uri uri = data.getData();
+            // Запрашиваем持久ые разрешения для URI (совместимость с Onyx Boox)
+            try {
+                if (requestCode == OPEN_FILE_REQUEST) {
+                    getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                }
+            } catch (Exception ignored) {}
             if (requestCode == SAVE_FILE_REQUEST) {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
@@ -220,9 +228,14 @@ public class MainActivity extends Activity {
         try {
             InputStream is = getContentResolver().openInputStream(uri);
             if (is != null) {
-                byte[] buffer = is.readAllBytes();
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = is.read(buf)) != -1) {
+                    bos.write(buf, 0, n);
+                }
                 is.close();
-                String content = new String(buffer);
+                String content = bos.toString("UTF-8");
                 sourceEditor.setText(content);
                 currentFileUri = uri;
                 currentFilePath = uri.getPath();
