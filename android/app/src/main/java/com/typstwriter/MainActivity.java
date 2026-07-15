@@ -3,10 +3,15 @@ package com.typstwriter;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.method.MetaKeyKeyListener;
+import android.util.TypedValue;
+import android.view.KeyEvent;
+import android.view.inputmethod.EditorInfo;
 import android.widget.TextView;
 import android.widget.Button;
 import android.widget.EditText;
@@ -35,16 +40,28 @@ public class MainActivity extends Activity {
     private static final int OPEN_FILE_REQUEST = 102;
     private static final int EXPORT_FILE_REQUEST = 103;
 
+    private static final String PREFS_NAME = "TypstWriterPrefs";
+    private static final String PREF_FONT_SIZE = "editor_font_size";
+    private static final int DEFAULT_FONT_SIZE = 14;
+    private static final int MIN_FONT_SIZE = 8;
+    private static final int MAX_FONT_SIZE = 40;
+
     private EditText sourceEditor;
+    private EditText fontSizeInput;
     private TextView statusText;
     private String currentFilePath = null;
     private Uri currentFileUri = null;
     private String exportFormat = "pdf";
+    private int currentFontSize = DEFAULT_FONT_SIZE;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestStoragePermissions();
+
+        // Загружаем сохранённый размер шрифта
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        currentFontSize = prefs.getInt(PREF_FONT_SIZE, DEFAULT_FONT_SIZE);
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -56,14 +73,89 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER);
         layout.addView(title);
 
+        // Поле размера шрифта
+        LinearLayout sizeLayout = new LinearLayout(this);
+        sizeLayout.setOrientation(LinearLayout.HORIZONTAL);
+        sizeLayout.setGravity(Gravity.CENTER);
+
+        TextView sizeLabel = new TextView(this);
+        sizeLabel.setText("Font size: ");
+        sizeLabel.setTextSize(14);
+        sizeLayout.addView(sizeLabel);
+
+        fontSizeInput = new EditText(this);
+        fontSizeInput.setText(String.valueOf(currentFontSize));
+        fontSizeInput.setTextSize(14);
+        fontSizeInput.setInputType(EditorInfo.TYPE_CLASS_NUMBER);
+        LinearLayout.LayoutParams sizeInputParams = new LinearLayout.LayoutParams(
+            120, LinearLayout.LayoutParams.WRAP_CONTENT);
+        fontSizeInput.setLayoutParams(sizeInputParams);
+        fontSizeInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_GO) {
+                applyFontSizeFromInput();
+                return true;
+            }
+            return false;
+        });
+        // Применяем размер при потере фокуса
+        fontSizeInput.setOnFocusChangeListener((v, hasFocus) -> {
+            if (!hasFocus) {
+                applyFontSizeFromInput();
+            }
+        });
+        sizeLayout.addView(fontSizeInput);
+
+        TextView sizeHint = new TextView(this);
+        sizeHint.setText("  (Ctrl+/Ctrl-)");
+        sizeHint.setTextSize(12);
+        sizeHint.setAlpha(0.5f);
+        sizeLayout.addView(sizeHint);
+
+        LinearLayout.LayoutParams sizeParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sizeParams.topMargin = 8;
+        layout.addView(sizeLayout, sizeParams);
+
+        // Редактор
         sourceEditor = new EditText(this);
         sourceEditor.setHint("Enter Typst code...");
         sourceEditor.setMinLines(10);
         sourceEditor.setGravity(Gravity.TOP | Gravity.LEFT);
+        sourceEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize);
+        sourceEditor.setTypeface(android.graphics.Typeface.MONOSPACE);
         LinearLayout.LayoutParams editorParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
-        editorParams.topMargin = 16;
+        editorParams.topMargin = 8;
         layout.addView(sourceEditor, editorParams);
+
+        // Tab → 4 пробела + Ctrl+/Ctrl-
+        sourceEditor.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) {
+                return false;
+            }
+
+            // Tab вставляет 4 пробела
+            if (keyCode == KeyEvent.KEYCODE_TAB) {
+                int start = sourceEditor.getSelectionStart();
+                sourceEditor.getText().insert(start, "    ");
+                return true;
+            }
+
+            // Ctrl+Plus / Ctrl+Minus
+            boolean ctrlPressed = (event.getMetaState() & KeyEvent.META_CTRL_ON) != 0;
+            if (ctrlPressed) {
+                if (keyCode == KeyEvent.KEYCODE_EQUALS || keyCode == KeyEvent.KEYCODE_NUMPAD_ADD) {
+                    changeFontSize(1);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_MINUS || keyCode == KeyEvent.KEYCODE_NUMPAD_SUBTRACT) {
+                    changeFontSize(-1);
+                    return true;
+                }
+            }
+
+            return false;
+        });
 
         // File buttons
         LinearLayout fileLayout = new LinearLayout(this);
@@ -122,6 +214,31 @@ public class MainActivity extends Activity {
 
         setContentView(layout);
         sourceEditor.setText("#set page(width: 10cm, height: auto)\n\n= Hello from Typst Writer!\n\nThis is a test document compiled with native Typst library.");
+    }
+
+    private void changeFontSize(int delta) {
+        currentFontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, currentFontSize + delta));
+        sourceEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize);
+        fontSizeInput.setText(String.valueOf(currentFontSize));
+        saveFontSize();
+    }
+
+    private void applyFontSizeFromInput() {
+        try {
+            int size = Integer.parseInt(fontSizeInput.getText().toString().trim());
+            size = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, size));
+            currentFontSize = size;
+            sourceEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize);
+            fontSizeInput.setText(String.valueOf(currentFontSize));
+            saveFontSize();
+        } catch (NumberFormatException ignored) {
+            fontSizeInput.setText(String.valueOf(currentFontSize));
+        }
+    }
+
+    private void saveFontSize() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit().putInt(PREF_FONT_SIZE, currentFontSize).apply();
     }
 
     private void requestStoragePermissions() {
@@ -192,7 +309,6 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_OK && data != null && data.getData() != null) {
             Uri uri = data.getData();
-            // Запрашиваем持久ые разрешения для URI (совместимость с Onyx Boox)
             try {
                 if (requestCode == OPEN_FILE_REQUEST) {
                     getContentResolver().takePersistableUriPermission(uri,
@@ -280,7 +396,6 @@ public class MainActivity extends Activity {
                             });
                         }
                     } else {
-                        // Получаем ошибку из Rust
                         String error = getLastError();
                         if (error != null && !error.isEmpty()) {
                             runOnUiThread(() -> statusText.setText("Compilation error:\n" + error));

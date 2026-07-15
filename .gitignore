@@ -38,3 +38,7 @@ typst-core/target/
 *.swp
 *~
 .#*
+
+# Project notes
+instructions.md
+.mimocode/
