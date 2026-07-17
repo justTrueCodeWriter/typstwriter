@@ -423,27 +423,31 @@ public class MainActivity extends Activity {
     }
 
     private void addRecent(String uriStr, String name) {
-        if (uriStr == null || uriStr.isEmpty()) return;
-        if (name == null) name = "Untitled";
-        ArrayList<String> uris = getRecentUris();
-        ArrayList<String> names = getRecentNames();
-        int idx = uris.indexOf(uriStr);
-        if (idx >= 0) {
-            uris.remove(idx);
-            if (idx < names.size()) names.remove(idx);
+        try {
+            if (uriStr == null || uriStr.isEmpty()) return;
+            if (name == null) name = "Untitled";
+            ArrayList<String> uris = getRecentUris();
+            ArrayList<String> names = getRecentNames();
+            int idx = uris.indexOf(uriStr);
+            if (idx >= 0) {
+                uris.remove(idx);
+                if (idx < names.size()) names.remove(idx);
+            }
+            uris.add(0, uriStr);
+            names.add(0, name);
+            while (uris.size() > MAX_RECENT) {
+                uris.remove(uris.size() - 1);
+                names.remove(names.size() - 1);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < uris.size(); i++) {
+                if (i > 0) sb.append(RECENT_SEP);
+                sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
+            }
+            saveRecentRaw(sb.toString());
+        } catch (Exception e) {
+            saveRecentRaw("");
         }
-        uris.add(0, uriStr);
-        names.add(0, name);
-        while (uris.size() > MAX_RECENT) {
-            uris.remove(uris.size() - 1);
-            names.remove(names.size() - 1);
-        }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < uris.size(); i++) {
-            if (i > 0) sb.append(RECENT_SEP);
-            sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
-        }
-        saveRecentRaw(sb.toString());
     }
 
     private void removeRecent(String uriStr) {
@@ -571,23 +575,23 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-            Uri uri = data.getData();
-            try {
-                if (requestCode == OPEN_FILE_REQUEST) {
-                    getContentResolver().takePersistableUriPermission(uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                }
-            } catch (Exception ignored) {}
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        try {
             if (requestCode == SAVE_FILE_REQUEST) {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
-                addRecent(uri.toString(), uri.getLastPathSegment());
+                String name = uri.getLastPathSegment();
+                if (name == null) name = "Untitled";
+                addRecent(uri.toString(), name);
                 readFromFile(uri);
                 showEditor();
             } else if (requestCode == EXPORT_FILE_REQUEST) {
                 compileAndSave(uri, exportFormat);
             }
+        } catch (Exception e) {
+            statusText.setText("Error: " + e.getMessage());
+            showEditor();
         }
     }
 
