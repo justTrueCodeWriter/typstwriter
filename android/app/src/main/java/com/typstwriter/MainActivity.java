@@ -143,29 +143,41 @@ public class MainActivity extends Activity {
 
     private void refreshRecentList() {
         recentFilesContainer.removeAllViews();
-        ArrayList<String> uris = getRecentUris();
-        ArrayList<String> names = getRecentNames();
+        try {
+            ArrayList<String> uris = getRecentUris();
+            ArrayList<String> names = getRecentNames();
 
-        if (uris.isEmpty()) {
+            if (uris.isEmpty()) {
+                TextView empty = new TextView(this);
+                empty.setText("No recent files");
+                empty.setTextSize(14);
+                empty.setAlpha(0.5f);
+                recentFilesContainer.addView(empty);
+                return;
+            }
+
+            for (int i = 0; i < uris.size(); i++) {
+                final String uriStr = uris.get(i);
+                if (uriStr == null || uriStr.isEmpty()) continue;
+                String displayName = (i < names.size() && names.get(i) != null) ? names.get(i) : uriStr;
+                Button btn = new Button(this);
+                btn.setText(displayName);
+                btn.setTextSize(14);
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                p.bottomMargin = 4;
+                btn.setLayoutParams(p);
+                btn.setOnClickListener(v -> openRecentFile(uriStr));
+                recentFilesContainer.addView(btn);
+            }
+        } catch (Exception e) {
+            // Данные повреждены — очищаем
+            saveRecentRaw("");
             TextView empty = new TextView(this);
             empty.setText("No recent files");
             empty.setTextSize(14);
             empty.setAlpha(0.5f);
             recentFilesContainer.addView(empty);
-            return;
-        }
-
-        for (int i = 0; i < uris.size(); i++) {
-            final String uriStr = uris.get(i);
-            Button btn = new Button(this);
-            btn.setText(names.get(i));
-            btn.setTextSize(14);
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            p.bottomMargin = 4;
-            btn.setLayoutParams(p);
-            btn.setOnClickListener(v -> openRecentFile(uriStr));
-            recentFilesContainer.addView(btn);
         }
     }
 
@@ -411,6 +423,8 @@ public class MainActivity extends Activity {
     }
 
     private void addRecent(String uriStr, String name) {
+        if (uriStr == null || uriStr.isEmpty()) return;
+        if (name == null) name = "Untitled";
         ArrayList<String> uris = getRecentUris();
         ArrayList<String> names = getRecentNames();
         int idx = uris.indexOf(uriStr);
@@ -450,7 +464,15 @@ public class MainActivity extends Activity {
 
     private void openRecentFile(String uriStr) {
         try {
+            if (uriStr == null || uriStr.isEmpty()) {
+                removeRecent(uriStr);
+                return;
+            }
             Uri uri = Uri.parse(uriStr);
+            if (uri == null) {
+                removeRecent(uriStr);
+                return;
+            }
             InputStream is = getContentResolver().openInputStream(uri);
             if (is != null) {
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
@@ -470,9 +492,7 @@ public class MainActivity extends Activity {
                 showWelcome();
             }
         } catch (Exception e) {
-            // URI невалиден (разрешения SAF потеряны) — удаляем из недавних
             removeRecent(uriStr);
-            statusText.setText("File no longer accessible, removed from recent");
             showWelcome();
         }
     }
@@ -561,8 +581,9 @@ public class MainActivity extends Activity {
             if (requestCode == SAVE_FILE_REQUEST) {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
-                readFromFile(uri);
-                showEditor();
+                if (readFromFile(uri)) {
+                    showEditor();
+                }
             } else if (requestCode == EXPORT_FILE_REQUEST) {
                 compileAndSave(uri, exportFormat);
             }
@@ -584,7 +605,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void readFromFile(Uri uri) {
+    private boolean readFromFile(Uri uri) {
         try {
             InputStream is = getContentResolver().openInputStream(uri);
             if (is != null) {
@@ -600,10 +621,12 @@ public class MainActivity extends Activity {
                 currentFileUri = uri;
                 statusText.setText("Opened: " + uri.getLastPathSegment());
                 addRecent(uri.toString(), uri.getLastPathSegment());
+                return true;
             }
         } catch (Exception e) {
             statusText.setText("Error opening: " + e.getMessage());
         }
+        return false;
     }
 
     private void compileAndSave(Uri uri, String format) {
