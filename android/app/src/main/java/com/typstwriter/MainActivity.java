@@ -22,8 +22,6 @@ import android.widget.TextView;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.Set;
 
 public class MainActivity extends Activity {
 
@@ -47,8 +45,7 @@ public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "TypstWriterPrefs";
     private static final String PREF_FONT_SIZE = "editor_font_size";
-    private static final String PREF_RECENT_URIS = "recent_uris";
-    private static final String PREF_RECENT_NAMES = "recent_names";
+    private static final String PREF_RECENT = "recent_files";
     private static final int DEFAULT_FONT_SIZE = 14;
     private static final int MIN_FONT_SIZE = 8;
     private static final int MAX_FONT_SIZE = 40;
@@ -378,44 +375,77 @@ public class MainActivity extends Activity {
     }
 
     // ════════════════════════════════════════════
-    // Recent files
+    // Recent files — stored as "uri1\nname1\nuri2\nname2\n..."
     // ════════════════════════════════════════════
 
+    private static final String RECENT_SEP = "\n";
+
+    private String getRecentRaw() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_RECENT, "");
+    }
+
+    private void saveRecentRaw(String raw) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_RECENT, raw).apply();
+    }
+
     private ArrayList<String> getRecentUris() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        Set<String> set = prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>());
-        return new ArrayList<>(set);
+        ArrayList<String> result = new ArrayList<>();
+        String raw = getRecentRaw();
+        if (raw.isEmpty()) return result;
+        String[] parts = raw.split(RECENT_SEP, -1);
+        for (int i = 0; i + 1 < parts.length; i += 2) {
+            result.add(parts[i]);
+        }
+        return result;
     }
 
     private ArrayList<String> getRecentNames() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        Set<String> set = prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>());
-        return new ArrayList<>(set);
+        ArrayList<String> result = new ArrayList<>();
+        String raw = getRecentRaw();
+        if (raw.isEmpty()) return result;
+        String[] parts = raw.split(RECENT_SEP, -1);
+        for (int i = 1; i + 1 < parts.length; i += 2) {
+            result.add(parts[i]);
+        }
+        return result;
     }
 
     private void addRecent(String uriStr, String name) {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        LinkedHashSet<String> uris = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>()));
-        LinkedHashSet<String> names = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>()));
-
-        ArrayList<String> uList = new ArrayList<>(uris);
-        ArrayList<String> nList = new ArrayList<>(names);
-        int idx = uList.indexOf(uriStr);
+        ArrayList<String> uris = getRecentUris();
+        ArrayList<String> names = getRecentNames();
+        int idx = uris.indexOf(uriStr);
         if (idx >= 0) {
-            uList.remove(idx);
-            if (idx < nList.size()) nList.remove(idx);
+            uris.remove(idx);
+            if (idx < names.size()) names.remove(idx);
         }
-        uList.add(0, uriStr);
-        nList.add(0, name);
-        while (uList.size() > MAX_RECENT) {
-            uList.remove(uList.size() - 1);
-            nList.remove(nList.size() - 1);
+        uris.add(0, uriStr);
+        names.add(0, name);
+        while (uris.size() > MAX_RECENT) {
+            uris.remove(uris.size() - 1);
+            names.remove(names.size() - 1);
         }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < uris.size(); i++) {
+            if (i > 0) sb.append(RECENT_SEP);
+            sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
+        }
+        saveRecentRaw(sb.toString());
+    }
 
-        prefs.edit()
-            .putStringSet(PREF_RECENT_URIS, new LinkedHashSet<>(uList))
-            .putStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>(nList))
-            .apply();
+    private void removeRecent(String uriStr) {
+        ArrayList<String> uris = getRecentUris();
+        ArrayList<String> names = getRecentNames();
+        int idx = uris.indexOf(uriStr);
+        if (idx >= 0) {
+            uris.remove(idx);
+            if (idx < names.size()) names.remove(idx);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < uris.size(); i++) {
+            if (i > 0) sb.append(RECENT_SEP);
+            sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
+        }
+        saveRecentRaw(sb.toString());
     }
 
     private void openRecentFile(String uriStr) {
@@ -445,23 +475,6 @@ public class MainActivity extends Activity {
             statusText.setText("File no longer accessible, removed from recent");
             showWelcome();
         }
-    }
-
-    private void removeRecent(String uriStr) {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        LinkedHashSet<String> uris = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>()));
-        LinkedHashSet<String> names = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>()));
-        ArrayList<String> uList = new ArrayList<>(uris);
-        ArrayList<String> nList = new ArrayList<>(names);
-        int idx = uList.indexOf(uriStr);
-        if (idx >= 0) {
-            uList.remove(idx);
-            if (idx < nList.size()) nList.remove(idx);
-        }
-        prefs.edit()
-            .putStringSet(PREF_RECENT_URIS, new LinkedHashSet<>(uList))
-            .putStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>(nList))
-            .apply();
     }
 
     // ════════════════════════════════════════════
