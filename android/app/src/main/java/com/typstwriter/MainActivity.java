@@ -201,7 +201,7 @@ public class MainActivity extends Activity {
         Button homeBtn = new Button(this);
         homeBtn.setText("Home");
         homeBtn.setTextSize(14);
-        homeBtn.setOnClickListener(v -> showEditor());
+        homeBtn.setOnClickListener(v -> showWelcome());
         topBar.addView(homeBtn);
 
         TextView title = new TextView(this);
@@ -421,12 +421,47 @@ public class MainActivity extends Activity {
     private void openRecentFile(String uriStr) {
         try {
             Uri uri = Uri.parse(uriStr);
-            readFromFile(uri);
-            showEditor();
+            InputStream is = getContentResolver().openInputStream(uri);
+            if (is != null) {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = is.read(buf)) != -1) {
+                    bos.write(buf, 0, n);
+                }
+                is.close();
+                String content = bos.toString("UTF-8");
+                sourceEditor.setText(content);
+                currentFileUri = uri;
+                statusText.setText("Opened: " + uri.getLastPathSegment());
+                showEditor();
+            } else {
+                removeRecent(uriStr);
+                showWelcome();
+            }
         } catch (Exception e) {
-            statusText.setText("Error: " + e.getMessage());
-            showEditor();
+            // URI невалиден (разрешения SAF потеряны) — удаляем из недавних
+            removeRecent(uriStr);
+            statusText.setText("File no longer accessible, removed from recent");
+            showWelcome();
         }
+    }
+
+    private void removeRecent(String uriStr) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        LinkedHashSet<String> uris = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>()));
+        LinkedHashSet<String> names = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>()));
+        ArrayList<String> uList = new ArrayList<>(uris);
+        ArrayList<String> nList = new ArrayList<>(names);
+        int idx = uList.indexOf(uriStr);
+        if (idx >= 0) {
+            uList.remove(idx);
+            if (idx < nList.size()) nList.remove(idx);
+        }
+        prefs.edit()
+            .putStringSet(PREF_RECENT_URIS, new LinkedHashSet<>(uList))
+            .putStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>(nList))
+            .apply();
     }
 
     // ════════════════════════════════════════════
