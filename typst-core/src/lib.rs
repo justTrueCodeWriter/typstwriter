@@ -17,6 +17,9 @@ use jni::sys::{jlong, jbyteArray};
 /// Глобальное хранилище последней ошибки
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
+/// Глобальное хранилище предупреждений
+static LAST_WARNINGS: Mutex<Option<String>> = Mutex::new(None);
+
 fn set_last_error(msg: String) {
     if let Ok(mut guard) = LAST_ERROR.lock() {
         *guard = Some(msg);
@@ -29,6 +32,33 @@ fn get_last_error_msg() -> String {
     } else {
         String::new()
     }
+}
+
+fn set_last_warnings(msg: String) {
+    if let Ok(mut guard) = LAST_WARNINGS.lock() {
+        *guard = Some(msg);
+    }
+}
+
+fn get_last_warnings_msg() -> String {
+    if let Ok(guard) = LAST_WARNINGS.lock() {
+        guard.clone().unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+use typst::diag::SourceDiagnostic;
+
+fn format_warnings(warnings: &[SourceDiagnostic]) -> String {
+    let mut out = String::new();
+    for w in warnings {
+        out.push_str(&format!("warning: {}\n", w.message));
+        for hint in &w.hints {
+            out.push_str(&format!("  hint: {}\n", hint.v));
+        }
+    }
+    out
 }
 
 /// Результат компиляции — тип формата
@@ -145,8 +175,12 @@ fn compile_inner(source: &str, font_paths: &[PathBuf]) -> CompileResult {
     let world = MobileWorld::new(source, font_paths, false);
     let result = typst::compile::<typst_layout::PagedDocument>(&world);
 
-    for warning in &result.warnings {
-        eprintln!("Typst warning: {:?}", warning.message);
+    let warnings_text = format_warnings(&result.warnings);
+    if !warnings_text.is_empty() {
+        set_last_warnings(warnings_text.clone());
+        eprintln!("{}", warnings_text);
+    } else {
+        set_last_warnings(String::new());
     }
 
     match result.output {
@@ -172,7 +206,7 @@ fn compile_inner(source: &str, font_paths: &[PathBuf]) -> CompileResult {
         Err(errors) => {
             let mut error_msg = String::from("Compilation errors:\n");
             for error in &errors {
-                let msg = format!("  - {:?}", error.message);
+                let msg = format!("  - {}", error.message);
                 eprintln!("Typst error: {}", msg);
                 error_msg.push_str(&msg);
                 error_msg.push('\n');
@@ -187,8 +221,12 @@ fn compile_html_inner(source: &str, font_paths: &[PathBuf]) -> CompileResult {
     let world = MobileWorld::new(source, font_paths, true);
     let result = typst::compile::<typst_html::HtmlDocument>(&world);
 
-    for warning in &result.warnings {
-        eprintln!("Typst HTML warning: {:?}", warning.message);
+    let warnings_text = format_warnings(&result.warnings);
+    if !warnings_text.is_empty() {
+        set_last_warnings(warnings_text.clone());
+        eprintln!("{}", warnings_text);
+    } else {
+        set_last_warnings(String::new());
     }
 
     match result.output {
@@ -214,7 +252,7 @@ fn compile_html_inner(source: &str, font_paths: &[PathBuf]) -> CompileResult {
         Err(errors) => {
             let mut error_msg = String::from("HTML compilation errors:\n");
             for error in &errors {
-                let msg = format!("  - {:?}", error.message);
+                let msg = format!("  - {}", error.message);
                 eprintln!("Typst HTML error: {}", msg);
                 error_msg.push_str(&msg);
                 error_msg.push('\n');
@@ -412,6 +450,19 @@ pub extern "system" fn Java_com_typstwriter_MainActivity_getLastError(
 ) -> jni::sys::jstring {
     let error_msg = get_last_error_msg();
     let jstr = match env.new_string(&error_msg) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    jstr.into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_typstwriter_MainActivity_getWarnings(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let warnings_msg = get_last_warnings_msg();
+    let jstr = match env.new_string(&warnings_msg) {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };

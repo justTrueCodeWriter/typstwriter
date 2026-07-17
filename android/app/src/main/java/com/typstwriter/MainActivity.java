@@ -5,20 +5,25 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.method.MetaKeyKeyListener;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
-import android.widget.TextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.view.Gravity;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 public class MainActivity extends Activity {
 
@@ -26,7 +31,6 @@ public class MainActivity extends Activity {
         System.loadLibrary("typst_core");
     }
 
-    // Native methods
     private static native long compileToPdf(String source, String fontPath);
     private static native long compileToHtml(String source, String fontPath);
     private static native int getCompileResultLen(long resultPtr);
@@ -34,6 +38,7 @@ public class MainActivity extends Activity {
     private static native byte[] getCompileResultData(long resultPtr);
     private static native void freeCompileResult(long resultPtr);
     private static native String getLastError();
+    private static native String getWarnings();
 
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int SAVE_FILE_REQUEST = 101;
@@ -42,14 +47,21 @@ public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "TypstWriterPrefs";
     private static final String PREF_FONT_SIZE = "editor_font_size";
+    private static final String PREF_RECENT_URIS = "recent_uris";
+    private static final String PREF_RECENT_NAMES = "recent_names";
     private static final int DEFAULT_FONT_SIZE = 14;
     private static final int MIN_FONT_SIZE = 8;
     private static final int MAX_FONT_SIZE = 40;
+    private static final int MAX_RECENT = 10;
 
+    private LinearLayout rootLayout;
+    private View welcomeView;
+    private View editorView;
+    private LinearLayout recentFilesContainer;
     private EditText sourceEditor;
     private EditText fontSizeInput;
     private TextView statusText;
-    private String currentFilePath = null;
+    private TextView warningsText;
     private Uri currentFileUri = null;
     private String exportFormat = "pdf";
     private int currentFontSize = DEFAULT_FONT_SIZE;
@@ -59,37 +71,163 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestStoragePermissions();
 
-        // Загружаем сохранённый размер шрифта
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         currentFontSize = prefs.getInt(PREF_FONT_SIZE, DEFAULT_FONT_SIZE);
 
+        rootLayout = new LinearLayout(this);
+        rootLayout.setOrientation(LinearLayout.VERTICAL);
+
+        welcomeView = createWelcomeView();
+        editorView = createEditorView();
+
+        rootLayout.addView(welcomeView);
+        rootLayout.addView(editorView);
+
+        setContentView(rootLayout);
+        showWelcome();
+    }
+
+    // ════════════════════════════════════════════
+    // Welcome screen
+    // ════════════════════════════════════════════
+
+    private View createWelcomeView() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(48, 48, 48, 48);
+        layout.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        TextView title = new TextView(this);
+        title.setText("Typst Writer");
+        title.setTextSize(28);
+        title.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        titleParams.bottomMargin = 40;
+        layout.addView(title, titleParams);
+
+        Button newBtn = makeWideButton("New file");
+        newBtn.setOnClickListener(v -> {
+            newFile();
+            showEditor();
+        });
+        layout.addView(newBtn);
+
+        Button openBtn = makeWideButton("Open file");
+        openBtn.setOnClickListener(v -> openFile());
+        layout.addView(openBtn);
+
+        TextView recentLabel = new TextView(this);
+        recentLabel.setText("Recent files");
+        recentLabel.setTextSize(16);
+        recentLabel.setTypeface(null, Typeface.BOLD);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        labelParams.topMargin = 32;
+        labelParams.bottomMargin = 8;
+        layout.addView(recentLabel, labelParams);
+
+        recentFilesContainer = new LinearLayout(this);
+        recentFilesContainer.setOrientation(LinearLayout.VERTICAL);
+        layout.addView(recentFilesContainer);
+
+        return layout;
+    }
+
+    private Button makeWideButton(String text) {
+        Button btn = new Button(this);
+        btn.setText(text);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        p.bottomMargin = 8;
+        btn.setLayoutParams(p);
+        return btn;
+    }
+
+    private void refreshRecentList() {
+        recentFilesContainer.removeAllViews();
+        ArrayList<String> uris = getRecentUris();
+        ArrayList<String> names = getRecentNames();
+
+        if (uris.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No recent files");
+            empty.setTextSize(14);
+            empty.setAlpha(0.5f);
+            recentFilesContainer.addView(empty);
+            return;
+        }
+
+        for (int i = 0; i < uris.size(); i++) {
+            final String uriStr = uris.get(i);
+            Button btn = new Button(this);
+            btn.setText(names.get(i));
+            btn.setTextSize(14);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            p.bottomMargin = 4;
+            btn.setLayoutParams(p);
+            btn.setOnClickListener(v -> openRecentFile(uriStr));
+            recentFilesContainer.addView(btn);
+        }
+    }
+
+    private void showWelcome() {
+        welcomeView.setVisibility(View.VISIBLE);
+        editorView.setVisibility(View.GONE);
+        refreshRecentList();
+    }
+
+    private void showEditor() {
+        welcomeView.setVisibility(View.GONE);
+        editorView.setVisibility(View.VISIBLE);
+        sourceEditor.requestFocus();
+    }
+
+    // ════════════════════════════════════════════
+    // Editor screen
+    // ════════════════════════════════════════════
+
+    private View createEditorView() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(16, 16, 16, 16);
 
-        TextView title = new TextView(this);
-        title.setText("Typst Writer");
-        title.setTextSize(24);
-        title.setGravity(Gravity.CENTER);
-        layout.addView(title);
+        // Top bar: Home + title
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
 
-        // Поле размера шрифта
-        LinearLayout sizeLayout = new LinearLayout(this);
-        sizeLayout.setOrientation(LinearLayout.HORIZONTAL);
-        sizeLayout.setGravity(Gravity.CENTER);
+        Button homeBtn = new Button(this);
+        homeBtn.setText("Home");
+        homeBtn.setTextSize(14);
+        homeBtn.setOnClickListener(v -> showEditor());
+        topBar.addView(homeBtn);
+
+        TextView title = new TextView(this);
+        title.setText("  Typst Writer");
+        title.setTextSize(18);
+        topBar.addView(title);
+
+        layout.addView(topBar);
+
+        // Font size row
+        LinearLayout sizeRow = new LinearLayout(this);
+        sizeRow.setOrientation(LinearLayout.HORIZONTAL);
+        sizeRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView sizeLabel = new TextView(this);
-        sizeLabel.setText("Font size: ");
+        sizeLabel.setText("Size: ");
         sizeLabel.setTextSize(14);
-        sizeLayout.addView(sizeLabel);
+        sizeRow.addView(sizeLabel);
 
         fontSizeInput = new EditText(this);
         fontSizeInput.setText(String.valueOf(currentFontSize));
         fontSizeInput.setTextSize(14);
         fontSizeInput.setInputType(EditorInfo.TYPE_CLASS_NUMBER);
-        LinearLayout.LayoutParams sizeInputParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams siParams = new LinearLayout.LayoutParams(
             120, LinearLayout.LayoutParams.WRAP_CONTENT);
-        fontSizeInput.setLayoutParams(sizeInputParams);
+        fontSizeInput.setLayoutParams(siParams);
         fontSizeInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_GO) {
                 applyFontSizeFromInput();
@@ -97,53 +235,50 @@ public class MainActivity extends Activity {
             }
             return false;
         });
-        // Применяем размер при потере фокуса
         fontSizeInput.setOnFocusChangeListener((v, hasFocus) -> {
-            if (!hasFocus) {
-                applyFontSizeFromInput();
-            }
+            if (!hasFocus) applyFontSizeFromInput();
         });
-        sizeLayout.addView(fontSizeInput);
+        sizeRow.addView(fontSizeInput);
 
         TextView sizeHint = new TextView(this);
         sizeHint.setText("  (Ctrl+/Ctrl-)");
         sizeHint.setTextSize(12);
         sizeHint.setAlpha(0.5f);
-        sizeLayout.addView(sizeHint);
+        sizeRow.addView(sizeHint);
 
-        LinearLayout.LayoutParams sizeParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams srParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sizeParams.topMargin = 8;
-        layout.addView(sizeLayout, sizeParams);
+        srParams.topMargin = 4;
+        layout.addView(sizeRow, srParams);
 
-        // Редактор
+        // Editor
         sourceEditor = new EditText(this);
         sourceEditor.setHint("Enter Typst code...");
         sourceEditor.setMinLines(10);
         sourceEditor.setGravity(Gravity.TOP | Gravity.LEFT);
         sourceEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize);
-        sourceEditor.setTypeface(android.graphics.Typeface.MONOSPACE);
-        LinearLayout.LayoutParams editorParams = new LinearLayout.LayoutParams(
+        sourceEditor.setTypeface(Typeface.MONOSPACE);
+        LinearLayout.LayoutParams edParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
-        editorParams.topMargin = 8;
-        layout.addView(sourceEditor, editorParams);
+        edParams.topMargin = 4;
+        layout.addView(sourceEditor, edParams);
 
-        // Tab → 4 пробела + Ctrl+/Ctrl-
+        // Key listener: Tab, Ctrl+S, Ctrl+/-
         sourceEditor.setOnKeyListener((v, keyCode, event) -> {
-            if (event.getAction() != KeyEvent.ACTION_DOWN) {
-                return false;
-            }
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
 
-            // Tab вставляет 4 пробела
             if (keyCode == KeyEvent.KEYCODE_TAB) {
                 int start = sourceEditor.getSelectionStart();
                 sourceEditor.getText().insert(start, "    ");
                 return true;
             }
 
-            // Ctrl+Plus / Ctrl+Minus
-            boolean ctrlPressed = (event.getMetaState() & KeyEvent.META_CTRL_ON) != 0;
-            if (ctrlPressed) {
+            boolean ctrl = (event.getMetaState() & KeyEvent.META_CTRL_ON) != 0;
+            if (ctrl) {
+                if (keyCode == KeyEvent.KEYCODE_S) {
+                    saveFile();
+                    return true;
+                }
                 if (keyCode == KeyEvent.KEYCODE_EQUALS || keyCode == KeyEvent.KEYCODE_NUMPAD_ADD) {
                     changeFontSize(1);
                     return true;
@@ -153,68 +288,69 @@ public class MainActivity extends Activity {
                     return true;
                 }
             }
-
             return false;
         });
 
         // File buttons
-        LinearLayout fileLayout = new LinearLayout(this);
-        fileLayout.setOrientation(LinearLayout.HORIZONTAL);
-        fileLayout.setGravity(Gravity.CENTER);
+        LinearLayout fileRow = new LinearLayout(this);
+        fileRow.setOrientation(LinearLayout.HORIZONTAL);
+        fileRow.setGravity(Gravity.CENTER);
 
-        Button newButton = new Button(this);
-        newButton.setText("New");
-        newButton.setOnClickListener(v -> newFile());
-        fileLayout.addView(newButton);
+        fileRow.addView(makeSmallButton("New", v -> newFile()));
+        fileRow.addView(makeSmallButton("Open", v -> openFile()));
+        fileRow.addView(makeSmallButton("Save", v -> saveFile()));
+        fileRow.addView(makeSmallButton("Save As", v -> saveFileAs()));
 
-        Button openButton = new Button(this);
-        openButton.setText("Open");
-        openButton.setOnClickListener(v -> openFile());
-        fileLayout.addView(openButton);
-
-        Button saveButton = new Button(this);
-        saveButton.setText("Save");
-        saveButton.setOnClickListener(v -> saveFile());
-        fileLayout.addView(saveButton);
-
-        Button saveAsButton = new Button(this);
-        saveAsButton.setText("Save As");
-        saveAsButton.setOnClickListener(v -> saveFileAs());
-        fileLayout.addView(saveAsButton);
-
-        LinearLayout.LayoutParams fileParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams frParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        fileParams.topMargin = 8;
-        layout.addView(fileLayout, fileParams);
+        frParams.topMargin = 8;
+        layout.addView(fileRow, frParams);
 
         // Export buttons
-        LinearLayout exportLayout = new LinearLayout(this);
-        exportLayout.setOrientation(LinearLayout.HORIZONTAL);
-        exportLayout.setGravity(Gravity.CENTER);
+        LinearLayout exportRow = new LinearLayout(this);
+        exportRow.setOrientation(LinearLayout.HORIZONTAL);
+        exportRow.setGravity(Gravity.CENTER);
 
-        Button pdfButton = new Button(this);
-        pdfButton.setText("Export PDF");
-        pdfButton.setOnClickListener(v -> exportTypst("pdf"));
-        exportLayout.addView(pdfButton);
+        exportRow.addView(makeSmallButton("Export PDF", v -> exportTypst("pdf")));
+        exportRow.addView(makeSmallButton("Export HTML", v -> exportTypst("html")));
 
-        Button htmlButton = new Button(this);
-        htmlButton.setText("Export HTML");
-        htmlButton.setOnClickListener(v -> exportTypst("html"));
-        exportLayout.addView(htmlButton);
-
-        LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams erParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        exportParams.topMargin = 8;
-        layout.addView(exportLayout, exportParams);
+        erParams.topMargin = 4;
+        layout.addView(exportRow, erParams);
 
+        // Status
         statusText = new TextView(this);
         statusText.setText("Ready");
-        statusText.setPadding(0, 16, 0, 0);
+        statusText.setPadding(0, 8, 0, 0);
         layout.addView(statusText);
 
-        setContentView(layout);
-        sourceEditor.setText("#set page(width: 10cm, height: auto)\n\n= Hello from Typst Writer!\n\nThis is a test document compiled with native Typst library.");
+        // Warnings
+        warningsText = new TextView(this);
+        warningsText.setTextSize(12);
+        warningsText.setTypeface(Typeface.MONOSPACE);
+        warningsText.setPadding(0, 4, 0, 0);
+        warningsText.setVisibility(View.GONE);
+        layout.addView(warningsText);
+
+        return layout;
     }
+
+    private Button makeSmallButton(String text, android.view.View.OnClickListener listener) {
+        Button btn = new Button(this);
+        btn.setText(text);
+        btn.setTextSize(12);
+        btn.setOnClickListener(listener);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        p.setMargins(4, 0, 4, 0);
+        btn.setLayoutParams(p);
+        return btn;
+    }
+
+    // ════════════════════════════════════════════
+    // Font size
+    // ════════════════════════════════════════════
 
     private void changeFontSize(int delta) {
         currentFontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, currentFontSize + delta));
@@ -237,9 +373,65 @@ public class MainActivity extends Activity {
     }
 
     private void saveFontSize() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        prefs.edit().putInt(PREF_FONT_SIZE, currentFontSize).apply();
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit().putInt(PREF_FONT_SIZE, currentFontSize).apply();
     }
+
+    // ════════════════════════════════════════════
+    // Recent files
+    // ════════════════════════════════════════════
+
+    private ArrayList<String> getRecentUris() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        Set<String> set = prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>());
+        return new ArrayList<>(set);
+    }
+
+    private ArrayList<String> getRecentNames() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        Set<String> set = prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>());
+        return new ArrayList<>(set);
+    }
+
+    private void addRecent(String uriStr, String name) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        LinkedHashSet<String> uris = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_URIS, new LinkedHashSet<>()));
+        LinkedHashSet<String> names = new LinkedHashSet<>(prefs.getStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>()));
+
+        ArrayList<String> uList = new ArrayList<>(uris);
+        ArrayList<String> nList = new ArrayList<>(names);
+        int idx = uList.indexOf(uriStr);
+        if (idx >= 0) {
+            uList.remove(idx);
+            if (idx < nList.size()) nList.remove(idx);
+        }
+        uList.add(0, uriStr);
+        nList.add(0, name);
+        while (uList.size() > MAX_RECENT) {
+            uList.remove(uList.size() - 1);
+            nList.remove(nList.size() - 1);
+        }
+
+        prefs.edit()
+            .putStringSet(PREF_RECENT_URIS, new LinkedHashSet<>(uList))
+            .putStringSet(PREF_RECENT_NAMES, new LinkedHashSet<>(nList))
+            .apply();
+    }
+
+    private void openRecentFile(String uriStr) {
+        try {
+            Uri uri = Uri.parse(uriStr);
+            readFromFile(uri);
+            showEditor();
+        } catch (Exception e) {
+            statusText.setText("Error: " + e.getMessage());
+            showEditor();
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // Permissions
+    // ════════════════════════════════════════════
 
     private void requestStoragePermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -253,11 +445,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ════════════════════════════════════════════
+    // File operations
+    // ════════════════════════════════════════════
+
     private void newFile() {
         sourceEditor.setText("");
-        currentFilePath = null;
         currentFileUri = null;
         statusText.setText("New file created");
+        warningsText.setVisibility(View.GONE);
     }
 
     private void saveFile() {
@@ -290,7 +486,6 @@ public class MainActivity extends Activity {
             statusText.setText("Error: Source code is empty");
             return;
         }
-
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         if ("html".equals(format)) {
@@ -319,6 +514,7 @@ public class MainActivity extends Activity {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
                 readFromFile(uri);
+                showEditor();
             } else if (requestCode == EXPORT_FILE_REQUEST) {
                 compileAndSave(uri, exportFormat);
             }
@@ -329,11 +525,11 @@ public class MainActivity extends Activity {
         try {
             OutputStream os = getContentResolver().openOutputStream(uri);
             if (os != null) {
-                os.write(sourceEditor.getText().toString().getBytes());
+                os.write(sourceEditor.getText().toString().getBytes("UTF-8"));
                 os.close();
                 currentFileUri = uri;
-                currentFilePath = uri.getPath();
-                statusText.setText("Saved to: " + uri.getLastPathSegment());
+                statusText.setText("Saved: " + uri.getLastPathSegment());
+                addRecent(uri.toString(), uri.getLastPathSegment());
             }
         } catch (Exception e) {
             statusText.setText("Error saving: " + e.getMessage());
@@ -354,8 +550,8 @@ public class MainActivity extends Activity {
                 String content = bos.toString("UTF-8");
                 sourceEditor.setText(content);
                 currentFileUri = uri;
-                currentFilePath = uri.getPath();
                 statusText.setText("Opened: " + uri.getLastPathSegment());
+                addRecent(uri.toString(), uri.getLastPathSegment());
             }
         } catch (Exception e) {
             statusText.setText("Error opening: " + e.getMessage());
@@ -368,8 +564,8 @@ public class MainActivity extends Activity {
             statusText.setText("Error: Source code is empty");
             return;
         }
-
         statusText.setText("Compiling...");
+        warningsText.setVisibility(View.GONE);
 
         new Thread(() -> {
             try {
@@ -379,6 +575,8 @@ public class MainActivity extends Activity {
                 } else {
                     resultPtr = compileToPdf(source, null);
                 }
+
+                String warnings = getWarnings();
 
                 if (resultPtr != 0) {
                     byte[] data = getCompileResultData(resultPtr);
@@ -390,26 +588,25 @@ public class MainActivity extends Activity {
                         if (os != null) {
                             os.write(data);
                             os.close();
+                            final String warnMsg = (warnings != null && !warnings.isEmpty()) ? warnings : null;
                             final int size = len;
                             runOnUiThread(() -> {
-                                statusText.setText("Exported to: " + uri.getLastPathSegment() + "\nSize: " + size + " bytes");
+                                statusText.setText("Exported: " + uri.getLastPathSegment() + " (" + size + " bytes)");
+                                if (warnMsg != null) {
+                                    warningsText.setText(warnMsg);
+                                    warningsText.setVisibility(View.VISIBLE);
+                                }
                             });
                         }
                     } else {
                         String error = getLastError();
-                        if (error != null && !error.isEmpty()) {
-                            runOnUiThread(() -> statusText.setText("Compilation error:\n" + error));
-                        } else {
-                            runOnUiThread(() -> statusText.setText("Compilation failed: no data"));
-                        }
+                        String msg = (error != null && !error.isEmpty()) ? error : "Compilation failed: no data";
+                        runOnUiThread(() -> statusText.setText(msg));
                     }
                 } else {
                     String error = getLastError();
-                    if (error != null && !error.isEmpty()) {
-                        runOnUiThread(() -> statusText.setText("Compilation error:\n" + error));
-                    } else {
-                        runOnUiThread(() -> statusText.setText("Compilation failed"));
-                    }
+                    String msg = (error != null && !error.isEmpty()) ? error : "Compilation failed";
+                    runOnUiThread(() -> statusText.setText(msg));
                 }
             } catch (Exception e) {
                 runOnUiThread(() -> statusText.setText("Error: " + e.getMessage()));
