@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.provider.DocumentsContract;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -386,11 +387,25 @@ public class MainActivity extends Activity {
             .edit().putInt(PREF_FONT_SIZE, currentFontSize).apply();
     }
 
+    private String getDisplayName(Uri uri) {
+        try {
+            String docId = DocumentsContract.getDocumentId(uri);
+            if (docId != null && docId.contains(":")) {
+                return docId.substring(docId.lastIndexOf(':') + 1);
+            }
+            if (docId != null && docId.contains("/")) {
+                return docId.substring(docId.lastIndexOf('/') + 1);
+            }
+        } catch (Exception ignored) {}
+        String last = uri.getLastPathSegment();
+        return last != null ? last : "Untitled";
+    }
+
     // ════════════════════════════════════════════
-    // Recent files — stored as "uri1\nname1\nuri2\nname2\n..."
+    // Recent files — stored as "uri1\0name1\0uri2\0name2\0..."
     // ════════════════════════════════════════════
 
-    private static final String RECENT_SEP = "\n";
+    private static final String RECENT_SEP = "\0";
 
     private String getRecentRaw() {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_RECENT, "");
@@ -445,8 +460,8 @@ public class MainActivity extends Activity {
                 sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
             }
             saveRecentRaw(sb.toString());
-        } catch (Exception e) {
-            saveRecentRaw("");
+            } catch (Exception e) {
+            // не очищаем данные при ошибке
         }
     }
 
@@ -489,7 +504,7 @@ public class MainActivity extends Activity {
                 String content = bos.toString("UTF-8");
                 sourceEditor.setText(content);
                 currentFileUri = uri;
-                statusText.setText("Opened: " + uri.getLastPathSegment());
+                statusText.setText("Opened: " + getDisplayName(uri));
                 showEditor();
             } else {
                 removeRecent(uriStr);
@@ -581,9 +596,7 @@ public class MainActivity extends Activity {
             if (requestCode == SAVE_FILE_REQUEST) {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
-                String name = uri.getLastPathSegment();
-                if (name == null) name = "Untitled";
-                addRecent(uri.toString(), name);
+                addRecent(uri.toString(), getDisplayName(uri));
                 readFromFile(uri);
                 showEditor();
             } else if (requestCode == EXPORT_FILE_REQUEST) {
@@ -602,8 +615,8 @@ public class MainActivity extends Activity {
                 os.write(sourceEditor.getText().toString().getBytes("UTF-8"));
                 os.close();
                 currentFileUri = uri;
-                statusText.setText("Saved: " + uri.getLastPathSegment());
-                addRecent(uri.toString(), uri.getLastPathSegment());
+                statusText.setText("Saved: " + getDisplayName(uri));
+                addRecent(uri.toString(), getDisplayName(uri));
             }
         } catch (Exception e) {
             statusText.setText("Error saving: " + e.getMessage());
@@ -624,7 +637,7 @@ public class MainActivity extends Activity {
                 String content = bos.toString("UTF-8");
                 sourceEditor.setText(content);
                 currentFileUri = uri;
-                statusText.setText("Opened: " + uri.getLastPathSegment());
+                statusText.setText("Opened: " + getDisplayName(uri));
             } else {
                 statusText.setText("Error: could not open file");
             }
@@ -666,7 +679,7 @@ public class MainActivity extends Activity {
                             final String warnMsg = (warnings != null && !warnings.isEmpty()) ? warnings : null;
                             final int size = len;
                             runOnUiThread(() -> {
-                                statusText.setText("Exported: " + uri.getLastPathSegment() + " (" + size + " bytes)");
+                                statusText.setText("Exported: " + getDisplayName(uri) + " (" + size + " bytes)");
                                 if (warnMsg != null) {
                                     warningsText.setText(warnMsg);
                                     warningsText.setVisibility(View.VISIBLE);
