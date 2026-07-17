@@ -545,6 +545,7 @@ public class MainActivity extends Activity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "application/octet-stream"});
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         startActivityForResult(intent, OPEN_FILE_REQUEST);
     }
 
@@ -581,9 +582,9 @@ public class MainActivity extends Activity {
             if (requestCode == SAVE_FILE_REQUEST) {
                 writeToFile(uri);
             } else if (requestCode == OPEN_FILE_REQUEST) {
-                if (readFromFile(uri)) {
-                    showEditor();
-                }
+                addRecent(uri.toString(), uri.getLastPathSegment());
+                readFromFile(uri);
+                showEditor();
             } else if (requestCode == EXPORT_FILE_REQUEST) {
                 compileAndSave(uri, exportFormat);
             }
@@ -605,7 +606,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean readFromFile(Uri uri) {
+    private void readFromFile(Uri uri) {
         try {
             InputStream is = getContentResolver().openInputStream(uri);
             if (is != null) {
@@ -620,13 +621,12 @@ public class MainActivity extends Activity {
                 sourceEditor.setText(content);
                 currentFileUri = uri;
                 statusText.setText("Opened: " + uri.getLastPathSegment());
-                addRecent(uri.toString(), uri.getLastPathSegment());
-                return true;
+            } else {
+                statusText.setText("Error: could not open file");
             }
         } catch (Exception e) {
             statusText.setText("Error opening: " + e.getMessage());
         }
-        return false;
     }
 
     private void compileAndSave(Uri uri, String format) {
