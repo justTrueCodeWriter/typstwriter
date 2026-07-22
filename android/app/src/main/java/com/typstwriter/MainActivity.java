@@ -5,9 +5,11 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -18,11 +20,12 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 
 public class MainActivity extends Activity {
 
@@ -44,9 +47,9 @@ public class MainActivity extends Activity {
     private static final int OPEN_FILE_REQUEST = 102;
     private static final int EXPORT_FILE_REQUEST = 103;
 
-    private static final String PREFS_NAME = "TypstWriterPrefs";
+    private static final String PREFS = "TypstWriterPrefs";
     private static final String PREF_FONT_SIZE = "editor_font_size";
-    private static final String PREF_RECENT = "recent_files";
+    private static final String PREF_RECENT_COUNT = "recent_count";
     private static final int DEFAULT_FONT_SIZE = 14;
     private static final int MIN_FONT_SIZE = 8;
     private static final int MAX_FONT_SIZE = 40;
@@ -61,16 +64,30 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView warningsText;
     private Uri currentFileUri = null;
+    private String currentFileName = "Untitled";
+    private String originalStoredName = null;
+    private EditText fileNameInput;
     private String exportFormat = "pdf";
     private int currentFontSize = DEFAULT_FONT_SIZE;
+
+    // ── Data class for recent files ──
+
+    static class RecentFile {
+        String uri;
+        String name;
+        long time;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestStoragePermissions();
 
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         currentFontSize = prefs.getInt(PREF_FONT_SIZE, DEFAULT_FONT_SIZE);
+
+        // Миграция со старого формата
+        migrateOldRecent(prefs);
 
         rootLayout = new LinearLayout(this);
         rootLayout.setOrientation(LinearLayout.VERTICAL);
@@ -145,10 +162,9 @@ public class MainActivity extends Activity {
     private void refreshRecentList() {
         recentFilesContainer.removeAllViews();
         try {
-            ArrayList<String> uris = getRecentUris();
-            ArrayList<String> names = getRecentNames();
+            ArrayList<RecentFile> files = getRecentFiles();
 
-            if (uris.isEmpty()) {
+            if (files.isEmpty()) {
                 TextView empty = new TextView(this);
                 empty.setText("No recent files");
                 empty.setTextSize(14);
@@ -157,23 +173,19 @@ public class MainActivity extends Activity {
                 return;
             }
 
-            for (int i = 0; i < uris.size(); i++) {
-                final String uriStr = uris.get(i);
-                if (uriStr == null || uriStr.isEmpty()) continue;
-                String displayName = (i < names.size() && names.get(i) != null) ? names.get(i) : uriStr;
+            for (final RecentFile f : files) {
                 Button btn = new Button(this);
-                btn.setText(displayName);
-                btn.setTextSize(14);
+                btn.setText(f.name);
+                btn.setTextSize(12);
                 LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 p.bottomMargin = 4;
                 btn.setLayoutParams(p);
-                btn.setOnClickListener(v -> openRecentFile(uriStr));
+                btn.setOnClickListener(v -> openRecentFile(f.uri));
                 recentFilesContainer.addView(btn);
             }
         } catch (Exception e) {
-            // Данные повреждены — очищаем
-            saveRecentRaw("");
+            clearAllRecent();
             TextView empty = new TextView(this);
             empty.setText("No recent files");
             empty.setTextSize(14);
@@ -195,7 +207,7 @@ public class MainActivity extends Activity {
     }
 
     // ════════════════════════════════════════════
-    // Editor screen
+    // Editor screen — only Save, Save As, Export
     // ════════════════════════════════════════════
 
     private View createEditorView() {
@@ -203,7 +215,7 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(16, 16, 16, 16);
 
-        // Top bar: Home + title
+        // Top bar: Home + filename input + .typ suffix
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -214,14 +226,27 @@ public class MainActivity extends Activity {
         homeBtn.setOnClickListener(v -> showWelcome());
         topBar.addView(homeBtn);
 
-        TextView title = new TextView(this);
-        title.setText("  Typst Writer");
-        title.setTextSize(18);
-        topBar.addView(title);
+        fileNameInput = new EditText(this);
+        fileNameInput.setText(currentFileName);
+        fileNameInput.setTextSize(16);
+        fileNameInput.setSingleLine(true);
+        fileNameInput.setMaxLines(1);
+        fileNameInput.setSelectAllOnFocus(true);
+        LinearLayout.LayoutParams fnParams = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+        fnParams.setMarginStart(8);
+        fileNameInput.setLayoutParams(fnParams);
+        topBar.addView(fileNameInput);
+
+        TextView extLabel = new TextView(this);
+        extLabel.setText(".typ");
+        extLabel.setTextSize(16);
+        extLabel.setPadding(4, 0, 0, 0);
+        topBar.addView(extLabel);
 
         layout.addView(topBar);
 
-        // Font size row
+        // Font size
         LinearLayout sizeRow = new LinearLayout(this);
         sizeRow.setOrientation(LinearLayout.HORIZONTAL);
         sizeRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -301,33 +326,27 @@ public class MainActivity extends Activity {
             return false;
         });
 
-        // File buttons
-        LinearLayout fileRow = new LinearLayout(this);
-        fileRow.setOrientation(LinearLayout.HORIZONTAL);
-        fileRow.setGravity(Gravity.CENTER);
-
-        fileRow.addView(makeSmallButton("New", v -> newFile()));
-        fileRow.addView(makeSmallButton("Open", v -> openFile()));
-        fileRow.addView(makeSmallButton("Save", v -> saveFile()));
-        fileRow.addView(makeSmallButton("Save As", v -> saveFileAs()));
-
-        LinearLayout.LayoutParams frParams = new LinearLayout.LayoutParams(
+        // Save buttons
+        LinearLayout saveRow = new LinearLayout(this);
+        saveRow.setOrientation(LinearLayout.HORIZONTAL);
+        saveRow.setGravity(Gravity.CENTER);
+        saveRow.addView(makeSmallButton("Save", v -> saveFile()));
+        saveRow.addView(makeSmallButton("Save As", v -> saveFileAs()));
+        LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        frParams.topMargin = 8;
-        layout.addView(fileRow, frParams);
+        saveParams.topMargin = 8;
+        layout.addView(saveRow, saveParams);
 
         // Export buttons
         LinearLayout exportRow = new LinearLayout(this);
         exportRow.setOrientation(LinearLayout.HORIZONTAL);
         exportRow.setGravity(Gravity.CENTER);
-
         exportRow.addView(makeSmallButton("Export PDF", v -> exportTypst("pdf")));
         exportRow.addView(makeSmallButton("Export HTML", v -> exportTypst("html")));
-
-        LinearLayout.LayoutParams erParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams expParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        erParams.topMargin = 4;
-        layout.addView(exportRow, erParams);
+        expParams.topMargin = 4;
+        layout.addView(exportRow, expParams);
 
         // Status
         statusText = new TextView(this);
@@ -346,7 +365,7 @@ public class MainActivity extends Activity {
         return layout;
     }
 
-    private Button makeSmallButton(String text, android.view.View.OnClickListener listener) {
+    private Button makeSmallButton(String text, View.OnClickListener listener) {
         Button btn = new Button(this);
         btn.setText(text);
         btn.setTextSize(12);
@@ -383,15 +402,35 @@ public class MainActivity extends Activity {
     }
 
     private void saveFontSize() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit().putInt(PREF_FONT_SIZE, currentFontSize).apply();
     }
 
+    // ════════════════════════════════════════════
+    // Display name helper
+    // ════════════════════════════════════════════
+
     private String getDisplayName(Uri uri) {
+        Cursor cursor = getContentResolver().query(uri, null, null, null, null);
+        if (cursor != null) {
+            try {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0 && cursor.moveToFirst()) {
+                    String name = cursor.getString(nameIndex);
+                    if (name != null && !name.isEmpty()) return name;
+                }
+            } finally {
+                cursor.close();
+            }
+        }
         try {
             String docId = DocumentsContract.getDocumentId(uri);
             if (docId != null && docId.contains(":")) {
-                return docId.substring(docId.lastIndexOf(':') + 1);
+                String path = docId.substring(docId.lastIndexOf(':') + 1);
+                if (path.contains("/")) {
+                    return path.substring(path.lastIndexOf('/') + 1);
+                }
+                return path;
             }
             if (docId != null && docId.contains("/")) {
                 return docId.substring(docId.lastIndexOf('/') + 1);
@@ -401,97 +440,136 @@ public class MainActivity extends Activity {
         return last != null ? last : "Untitled";
     }
 
-    // ════════════════════════════════════════════
-    // Recent files — stored as "uri1\0name1\0uri2\0name2\0..."
-    // ════════════════════════════════════════════
-
-    private static final String RECENT_SEP = "\0";
-
-    private String getRecentRaw() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_RECENT, "");
+    private String getFilePath(Uri uri) {
+        try {
+            String docId = DocumentsContract.getDocumentId(uri);
+            if (docId != null && docId.contains(":")) {
+                String path = docId.substring(docId.lastIndexOf(':') + 1);
+                if (path != null && !path.isEmpty()) return path;
+            }
+        } catch (Exception ignored) {}
+        return getDisplayName(uri);
     }
 
-    private void saveRecentRaw(String raw) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_RECENT, raw).apply();
-    }
-
-    private ArrayList<String> getRecentUris() {
-        ArrayList<String> result = new ArrayList<>();
-        String raw = getRecentRaw();
-        if (raw.isEmpty()) return result;
-        String[] parts = raw.split(RECENT_SEP, -1);
-        for (int i = 0; i + 1 < parts.length; i += 2) {
-            result.add(parts[i]);
+    private String getFileNameFromUri(Uri uri) {
+        String full = getDisplayName(uri);
+        if (full != null && full.endsWith(".typ")) {
+            return full.substring(0, full.length() - 4);
         }
-        return result;
+        return full != null ? full : "Untitled";
     }
 
-    private ArrayList<String> getRecentNames() {
-        ArrayList<String> result = new ArrayList<>();
-        String raw = getRecentRaw();
-        if (raw.isEmpty()) return result;
-        String[] parts = raw.split(RECENT_SEP, -1);
-        for (int i = 1; i + 1 < parts.length; i += 2) {
-            result.add(parts[i]);
+    private void updateFileNameFromUri(Uri uri) {
+        currentFileName = getFileNameFromUri(uri);
+        originalStoredName = currentFileName + ".typ";
+        fileNameInput.setText(currentFileName);
+    }
+
+    // ════════════════════════════════════════════
+    // Recent files — individual SharedPreferences keys
+    // ════════════════════════════════════════════
+
+    private ArrayList<RecentFile> getRecentFiles() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int count = prefs.getInt(PREF_RECENT_COUNT, 0);
+        ArrayList<RecentFile> list = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String uri = prefs.getString("recent_" + i + "_uri", null);
+            String name = prefs.getString("recent_" + i + "_name", null);
+            long time = prefs.getLong("recent_" + i + "_time", 0);
+            if (uri != null && name != null) {
+                RecentFile f = new RecentFile();
+                f.uri = uri;
+                f.name = name;
+                f.time = time;
+                list.add(f);
+            }
         }
-        return result;
+        Collections.sort(list, (a, b) -> Long.compare(b.time, a.time));
+        return list;
+    }
+
+    private void saveRecentFiles(ArrayList<RecentFile> list) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        // Очищаем старые ключи
+        int oldCount = prefs.getInt(PREF_RECENT_COUNT, 0);
+        for (int i = 0; i < oldCount; i++) {
+            editor.remove("recent_" + i + "_uri");
+            editor.remove("recent_" + i + "_name");
+            editor.remove("recent_" + i + "_time");
+        }
+        // Записываем новые
+        editor.putInt(PREF_RECENT_COUNT, list.size());
+        for (int i = 0; i < list.size(); i++) {
+            RecentFile f = list.get(i);
+            editor.putString("recent_" + i + "_uri", f.uri);
+            editor.putString("recent_" + i + "_name", f.name);
+            editor.putLong("recent_" + i + "_time", f.time);
+        }
+        editor.apply();
     }
 
     private void addRecent(String uriStr, String name) {
         try {
             if (uriStr == null || uriStr.isEmpty()) return;
             if (name == null) name = "Untitled";
-            ArrayList<String> uris = getRecentUris();
-            ArrayList<String> names = getRecentNames();
-            int idx = uris.indexOf(uriStr);
-            if (idx >= 0) {
-                uris.remove(idx);
-                if (idx < names.size()) names.remove(idx);
+            ArrayList<RecentFile> list = getRecentFiles();
+            // Удаляем дубликат
+            for (int i = list.size() - 1; i >= 0; i--) {
+                if (uriStr.equals(list.get(i).uri)) {
+                    list.remove(i);
+                }
             }
-            uris.add(0, uriStr);
-            names.add(0, name);
-            while (uris.size() > MAX_RECENT) {
-                uris.remove(uris.size() - 1);
-                names.remove(names.size() - 1);
+            // Добавляем в начало с текущим временем
+            RecentFile f = new RecentFile();
+            f.uri = uriStr;
+            f.name = name;
+            f.time = System.currentTimeMillis();
+            list.add(0, f);
+            // Ограничиваем размер
+            while (list.size() > MAX_RECENT) {
+                list.remove(list.size() - 1);
             }
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < uris.size(); i++) {
-                if (i > 0) sb.append(RECENT_SEP);
-                sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
-            }
-            saveRecentRaw(sb.toString());
-            } catch (Exception e) {
-            // не очищаем данные при ошибке
-        }
+            saveRecentFiles(list);
+        } catch (Exception ignored) {}
     }
 
-    private void removeRecent(String uriStr) {
-        ArrayList<String> uris = getRecentUris();
-        ArrayList<String> names = getRecentNames();
-        int idx = uris.indexOf(uriStr);
-        if (idx >= 0) {
-            uris.remove(idx);
-            if (idx < names.size()) names.remove(idx);
+    private void clearAllRecent() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        int count = prefs.getInt(PREF_RECENT_COUNT, 0);
+        for (int i = 0; i < count; i++) {
+            editor.remove("recent_" + i + "_uri");
+            editor.remove("recent_" + i + "_name");
+            editor.remove("recent_" + i + "_time");
         }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < uris.size(); i++) {
-            if (i > 0) sb.append(RECENT_SEP);
-            sb.append(uris.get(i)).append(RECENT_SEP).append(names.get(i));
+        editor.putInt(PREF_RECENT_COUNT, 0);
+        editor.apply();
+    }
+
+    private void migrateOldRecent(SharedPreferences prefs) {
+        // Удаляем старые ключи форматов v1/v2
+        if (prefs.contains("recent_files") || prefs.contains("recent_files_v2")
+            || prefs.contains("recent_uris") || prefs.contains("recent_names")) {
+            prefs.edit()
+                .remove("recent_files")
+                .remove("recent_files_v2")
+                .remove("recent_uris")
+                .remove("recent_names")
+                .apply();
         }
-        saveRecentRaw(sb.toString());
     }
 
     private void openRecentFile(String uriStr) {
         try {
-            if (uriStr == null || uriStr.isEmpty()) {
-                removeRecent(uriStr);
-                return;
-            }
+            if (uriStr == null || uriStr.isEmpty()) return;
             Uri uri = Uri.parse(uriStr);
-            if (uri == null) {
-                removeRecent(uriStr);
-                return;
-            }
+            if (uri == null) return;
+            try {
+                getContentResolver().takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {}
             InputStream is = getContentResolver().openInputStream(uri);
             if (is != null) {
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
@@ -501,18 +579,16 @@ public class MainActivity extends Activity {
                     bos.write(buf, 0, n);
                 }
                 is.close();
-                String content = bos.toString("UTF-8");
-                sourceEditor.setText(content);
+                sourceEditor.setText(bos.toString("UTF-8"));
                 currentFileUri = uri;
+                updateFileNameFromUri(uri);
                 statusText.setText("Opened: " + getDisplayName(uri));
+                // Обновляем время открытия
+                addRecent(uri.toString(), getFilePath(uri));
                 showEditor();
-            } else {
-                removeRecent(uriStr);
-                showWelcome();
             }
         } catch (Exception e) {
-            removeRecent(uriStr);
-            showWelcome();
+            statusText.setText("Error: " + e.getMessage());
         }
     }
 
@@ -539,23 +615,46 @@ public class MainActivity extends Activity {
     private void newFile() {
         sourceEditor.setText("");
         currentFileUri = null;
+        currentFileName = "Untitled";
+        originalStoredName = null;
+        fileNameInput.setText("Untitled");
         statusText.setText("New file created");
         warningsText.setVisibility(View.GONE);
     }
 
     private void saveFile() {
+        String newName = fileNameInput.getText().toString().trim();
+        if (newName.isEmpty()) newName = "Untitled";
+        fileNameInput.setText(newName);
+        currentFileName = newName;
         if (currentFileUri != null) {
+            String desiredName = currentFileName + ".typ";
+            String currentStoredName = getDisplayName(currentFileUri);
+            if (!desiredName.equals(currentStoredName)) {
+                Uri renamed = renameWithConflictHandling(currentFileUri, desiredName);
+                if (renamed != null) {
+                    currentFileUri = renamed;
+                    originalStoredName = desiredName;
+                }
+            }
             writeToFile(currentFileUri);
+            updateFileNameFromUri(currentFileUri);
+            statusText.setText("Saved: " + getDisplayName(currentFileUri));
+            addRecent(currentFileUri.toString(), getFilePath(currentFileUri));
         } else {
             saveFileAs();
         }
     }
 
     private void saveFileAs() {
+        currentFileName = fileNameInput.getText().toString().trim();
+        if (currentFileName.isEmpty()) currentFileName = "Untitled";
+        fileNameInput.setText(currentFileName);
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TITLE, "document.typ");
+        intent.setType("application/octet-stream");
+        intent.putExtra(Intent.EXTRA_TITLE, currentFileName + ".typ");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, SAVE_FILE_REQUEST);
     }
 
@@ -564,7 +663,7 @@ public class MainActivity extends Activity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "application/octet-stream"});
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, OPEN_FILE_REQUEST);
     }
 
@@ -594,10 +693,24 @@ public class MainActivity extends Activity {
         Uri uri = data.getData();
         try {
             if (requestCode == SAVE_FILE_REQUEST) {
+                String intendedName = currentFileName + ".typ";
                 writeToFile(uri);
+                Uri renamed = renameWithConflictHandling(currentFileUri, intendedName);
+                if (renamed != null && !renamed.equals(currentFileUri)) {
+                    currentFileUri = renamed;
+                }
+                updateFileNameFromUri(currentFileUri);
+                statusText.setText("Saved: " + getDisplayName(currentFileUri));
+                addRecent(currentFileUri.toString(), getFilePath(currentFileUri));
+                showEditor();
             } else if (requestCode == OPEN_FILE_REQUEST) {
-                addRecent(uri.toString(), getDisplayName(uri));
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {}
                 readFromFile(uri);
+                updateFileNameFromUri(uri);
+                addRecent(uri.toString(), getFilePath(uri));
                 showEditor();
             } else if (requestCode == EXPORT_FILE_REQUEST) {
                 compileAndSave(uri, exportFormat);
@@ -608,15 +721,57 @@ public class MainActivity extends Activity {
         }
     }
 
+    private Uri renameWithConflictHandling(Uri uri, String desiredName) {
+        try {
+            String docId = DocumentsContract.getDocumentId(uri);
+            if (docId == null || !docId.contains("/")) {
+                // Для числовых ID без пути — пробуем прямой rename
+                return DocumentsContract.renameDocument(getContentResolver(), uri, desiredName);
+            }
+            // Получаем родительский путь
+            String parentId = docId.substring(0, docId.lastIndexOf('/'));
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, parentId);
+            java.util.HashSet<String> existingNames = new java.util.HashSet<>();
+            Cursor c = getContentResolver().query(childrenUri,
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null);
+            if (c != null) {
+                try {
+                    while (c.moveToNext()) {
+                        String cn = c.getString(0);
+                        if (cn != null) existingNames.add(cn);
+                    }
+                } finally {
+                    c.close();
+                }
+            }
+            // Ищем уникальное имя
+            String finalName = desiredName;
+            if (existingNames.contains(desiredName)) {
+                int counter = 1;
+                String baseName = desiredName.endsWith(".typ")
+                    ? desiredName.substring(0, desiredName.length() - 4) : desiredName;
+                do {
+                    finalName = baseName + " (" + counter + ").typ";
+                    counter++;
+                } while (existingNames.contains(finalName));
+            }
+            return DocumentsContract.renameDocument(getContentResolver(), uri, finalName);
+        } catch (Exception ignored) {}
+        return uri;
+    }
+
     private void writeToFile(Uri uri) {
         try {
-            OutputStream os = getContentResolver().openOutputStream(uri);
+            OutputStream os = getContentResolver().openOutputStream(uri, "wt");
             if (os != null) {
                 os.write(sourceEditor.getText().toString().getBytes("UTF-8"));
+                os.flush();
                 os.close();
                 currentFileUri = uri;
-                statusText.setText("Saved: " + getDisplayName(uri));
-                addRecent(uri.toString(), getDisplayName(uri));
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                } catch (Exception ignored) {}
             }
         } catch (Exception e) {
             statusText.setText("Error saving: " + e.getMessage());
@@ -634,8 +789,7 @@ public class MainActivity extends Activity {
                     bos.write(buf, 0, n);
                 }
                 is.close();
-                String content = bos.toString("UTF-8");
-                sourceEditor.setText(content);
+                sourceEditor.setText(bos.toString("UTF-8"));
                 currentFileUri = uri;
                 statusText.setText("Opened: " + getDisplayName(uri));
             } else {
@@ -672,7 +826,7 @@ public class MainActivity extends Activity {
                     freeCompileResult(resultPtr);
 
                     if (data != null && len > 0) {
-                        OutputStream os = getContentResolver().openOutputStream(uri);
+                        OutputStream os = getContentResolver().openOutputStream(uri, "wt");
                         if (os != null) {
                             os.write(data);
                             os.close();
